@@ -1,69 +1,102 @@
-# Define Simulator
+# Create a simulator object
 set ns [new Simulator]
 
-# Set up the wireless channel
-set val(chan) Channel/WirelessChannel
-set val(prop) Propagation/TwoRayGround
-set val(netif) Phy/WirelessPhy
-set val(mac) Mac/802_11
-set val(ifq) Queue/DropTail/PriQueue
-set val(ll) LL
-set val(ant) Antenna/OmniAntenna
-set val(ifqlen) 50
-set val(nn) 10         ;# Number of mobile nodes
-set val(x) 500         ;# X dimension of topology
-set val(y) 500         ;# Y dimension of topology
+# Define different colors 
+# for data flows (for NAM)
+$ns color 1 Blue
+$ns color 2 Red
 
-# Topography
-set topo [new Topography]
-$topo load_flatgrid $val(x) $val(y)
+# Open the NAM trace file
+set nf [open out.nam w]
+$ns namtrace-all $nf
 
-# Node Configuration
-$ns node-config -adhocRouting AODV \
-                -llType $val(ll) \
-                -macType $val(mac) \
-                -ifqType $val(ifq) \
-                -ifqLen $val(ifqlen) \
-                -antType $val(ant) \
-                -propType $val(prop) \
-                -phyType $val(netif) \
-                -channelType $val(chan) \
-                -topoInstance $topo \
-                -agentTrace ON \
-                -routerTrace ON \
-                -macTrace OFF
-
-# Create nodes
-for {set i 0} {$i < $val(nn)} {incr i} {
-    set node_($i) [$ns node]
-    $node_($i) random-motion 0
-}
-
-# Define Random Walk Mobility Model
-proc set_random_walk {} {
-    global ns val
-    for {set i 0} {$i < $val(nn)} {incr i} {
-        set xpos [expr rand()*$val(x)]
-        set ypos [expr rand()*$val(y)]
-        set speed [expr 5.0 + rand()*5.0]
-        $ns at 0.0 "$node_($i) setdest $xpos $ypos $speed"
-    }
-    # Repeat every second to create a random walk effect
-    for {set i 0} {$i < $val(nn)} {incr i} {
-        $ns at [expr 1.0*$i] "$node_($i) setdest [expr rand()*$val(x)] [expr rand()*$val(y)] [expr 5.0 + rand()*5.0]"
-    }
-}
-
-# Apply the Random Walk Model
-set_random_walk
-
-# End Simulation
-$ns at 100.0 "finish"
+# Define a 'finish' procedure
 proc finish {} {
-    global ns
-    $ns flush-trace
-    exit 0
+	global ns nf
+	$ns flush-trace
+	
+	# Close the NAM trace file
+	close $nf
+	
+	# Execute NAM on the trace file
+	exec nam out.nam &
+	exit 0
 }
 
-# Run Simulation
+# Create four nodes
+set n0 [$ns node]
+set n1 [$ns node]
+set n2 [$ns node]
+set n3 [$ns node]
+
+# Create links between the nodes
+$ns duplex-link $n0 $n2 2Mb 10ms DropTail
+$ns duplex-link $n1 $n2 2Mb 10ms DropTail
+$ns duplex-link $n2 $n3 1.7Mb 20ms DropTail
+
+# Set Queue Size of link (n2-n3) to 10
+$ns queue-limit $n2 $n3 10
+
+# Give node position (for NAM)
+$ns duplex-link-op $n0 $n2 orient right-down
+$ns duplex-link-op $n1 $n2 orient right-up
+$ns duplex-link-op $n2 $n3 orient right
+
+# Monitor the queue for link (n2-n3). (for NAM)
+$ns duplex-link-op $n2 $n3 queuePos 0.5
+
+
+# Setup a TCP connection
+set tcp [new Agent/TCP]
+$tcp set class_ 2
+$ns attach-agent $n0 $tcp
+
+set sink [new Agent/TCPSink]
+$ns attach-agent $n3 $sink
+$ns connect $tcp $sink
+$tcp set fid_ 1
+
+# Setup a FTP over TCP connection
+set ftp [new Application/FTP]
+$ftp attach-agent $tcp
+$ftp set type_ FTP
+
+
+# Setup a UDP connection
+set udp [new Agent/UDP]
+$ns attach-agent $n1 $udp
+set null [new Agent/Null]
+
+$ns attach-agent $n3 $null
+$ns connect $udp $null
+$udp set fid_ 2
+
+# Setup a CBR over UDP connection
+set cbr [new Application/Traffic/CBR]
+$cbr attach-agent $udp
+$cbr set type_ CBR
+$cbr set packet_size_ 1000
+$cbr set rate_ 1mb
+$cbr set random_ false
+
+
+# Schedule events for the CBR and FTP agents
+$ns at 0.1 "$cbr start"
+$ns at 1.0 "$ftp start"
+$ns at 4.0 "$ftp stop"
+$ns at 4.5 "$cbr stop"
+
+# Detach tcp and sink agents
+# (not really necessary)
+$ns at 4.5 "$ns detach-agent $n0 $tcp ; $ns detach-agent $n3 $sink"
+
+# Call the finish procedure after
+# 5 seconds of simulation time
+$ns at 5.0 "finish"
+
+# Print CBR packet size and interval
+puts "CBR packet size = [$cbr set packet_size_]"
+puts "CBR interval = [$cbr set interval_]"
+
+# Run the simulation
 $ns run
